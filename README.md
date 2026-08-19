@@ -33,6 +33,7 @@ Bare-metal and RTOS firmware practice on an **ESP32-S3** using **ESP-IDF v6.0.2*
 |---|---|
 | `notes/day-01.md` | Toolchain bring-up, memory-mapped I/O, breadboard basics, debugging log |
 | `notes/day-02.md` | Clock, hardware timers, PWM/LEDC, GPIO interrupts, switch bounce |
+| `notes/theory/` | Hardware-independent reference: embedded C, serial protocols, interrupts and concurrency |
 
 ## Build & run
 

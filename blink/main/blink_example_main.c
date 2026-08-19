@@ -1,121 +1,62 @@
-/* Blink Example
-
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-*/
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_log.h"
-#include "led_strip.h"
 #include "sdkconfig.h"
-#include "soc/gpio_reg.h"
-#include "esp_timer.h"
+
 static const char *TAG = "example";
 
+#define BLINK_GPIO       CONFIG_BLINK_GPIO
 
+#define LEDC_MODE        LEDC_LOW_SPEED_MODE
+#define LEDC_TIMER       LEDC_TIMER_0
+#define LEDC_CHANNEL     LEDC_CHANNEL_0
+#define LEDC_RESOLUTION  LEDC_TIMER_13_BIT
+#define LEDC_FREQUENCY   5000
+#define LEDC_MAX_DUTY    8191
 
-/* Use project configuration menu (idf.py menuconfig) to choose the GPIO to blink,
-   or you can edit the following line and set a number here.
-*/
-#define BLINK_GPIO CONFIG_BLINK_GPIO
-
-static uint8_t s_led_state = 0;
-
-#ifdef CONFIG_BLINK_LED_STRIP
-
-static led_strip_handle_t led_strip;
-
-static void blink_led(void)
+static void configure_pwm(void)
 {
-    /* If the addressable LED is enabled */
-    if (s_led_state) {
-        /* Set the LED pixel using RGB from 0 (0%) to 255 (100%) for each color */
-        led_strip_set_pixel(led_strip, 0, 16, 16, 16);
-        /* Refresh the strip to send data */
-        led_strip_refresh(led_strip);
-    } else {
-        /* Set all LED off to clear all pixels */
-        led_strip_clear(led_strip);
-    }
-}
-
-static void configure_led(void)
-{
-    ESP_LOGI(TAG, "Example configured to blink addressable LED!");
-    /* LED strip initialization with the GPIO and pixels number*/
-    led_strip_config_t strip_config = {
-        .strip_gpio_num = BLINK_GPIO,
-        .max_leds = 1, // at least one LED on board
+    ledc_timer_config_t timer_conf = {
+        .speed_mode      = LEDC_MODE,
+        .timer_num       = LEDC_TIMER,
+        .duty_resolution = LEDC_RESOLUTION,
+        .freq_hz         = LEDC_FREQUENCY,
+        .clk_cfg         = LEDC_AUTO_CLK
     };
-#if CONFIG_BLINK_LED_STRIP_BACKEND_RMT
-    led_strip_rmt_config_t rmt_config = {
-        .resolution_hz = 10 * 1000 * 1000, // 10MHz
-        .flags.with_dma = false,
+    ESP_ERROR_CHECK(ledc_timer_config(&timer_conf));
+
+    ledc_channel_config_t ch_conf = {
+        .gpio_num   = BLINK_GPIO,
+        .speed_mode = LEDC_MODE,
+        .channel    = LEDC_CHANNEL,
+        .timer_sel  = LEDC_TIMER,
+        .duty       = 0,
+        .hpoint     = 0
     };
-    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
-#elif CONFIG_BLINK_LED_STRIP_BACKEND_SPI
-    led_strip_spi_config_t spi_config = {
-        .spi_bus = SPI2_HOST,
-        .flags.with_dma = true,
-    };
-    ESP_ERROR_CHECK(led_strip_new_spi_device(&strip_config, &spi_config, &led_strip));
-#else
-#error "unsupported LED strip backend"
-#endif
-    /* Set all LED off to clear all pixels */
-    led_strip_clear(led_strip);
+    ESP_ERROR_CHECK(ledc_channel_config(&ch_conf));
 }
 
-#elif CONFIG_BLINK_LED_GPIO
-
-static void blink_led(void)
+static void set_brightness(uint32_t duty)
 {
-    if (s_led_state) {
-        REG_WRITE(GPIO_OUT_W1TS_REG, (1 << BLINK_GPIO));
-    } else {
-        REG_WRITE(GPIO_OUT_W1TC_REG, (1 << BLINK_GPIO));
-    }
-}
-
-static void configure_led(void)
-{
-    ESP_LOGI(TAG, "Example configured to blink GPIO LED!");
-    gpio_reset_pin(BLINK_GPIO);
-    /* Set the GPIO as a push/pull output */
-    gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
-}
-
-#else
-#error "unsupported LED type"
-#endif
-
-static void led_timer_callback(void *arg)
-{
-    s_led_state = !s_led_state;
-    blink_led();
+    ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, duty);
+    ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
 }
 
 void app_main(void)
 {
-    configure_led();
+    ESP_LOGI(TAG, "PWM: GPIO %d, %d Hz, 13 bit", BLINK_GPIO, LEDC_FREQUENCY);
+    configure_pwm();
 
-    const esp_timer_create_args_t timer_args = {
-        .callback = &led_timer_callback,
-        .name = "led"
-    };
-
-    esp_timer_handle_t timer;
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(timer, 500000));
-
-    int counter = 0;
     while (1) {
-        ESP_LOGI(TAG, "ana dongu: %d", counter++);
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        for (int d = 0; d <= LEDC_MAX_DUTY; d += 64) {
+            set_brightness(d);
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        for (int d = LEDC_MAX_DUTY; d >= 0; d -= 64) {
+            set_brightness(d);
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
     }
 }

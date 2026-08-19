@@ -14,8 +14,10 @@
 #include "led_strip.h"
 #include "sdkconfig.h"
 #include "soc/gpio_reg.h"
-
+#include "esp_timer.h"
 static const char *TAG = "example";
+
+
 
 /* Use project configuration menu (idf.py menuconfig) to choose the GPIO to blink,
    or you can edit the following line and set a number here.
@@ -73,8 +75,12 @@ static void configure_led(void)
 
 static void blink_led(void)
 {
-    /* Set the GPIO level according to the state (LOW or HIGH)*/
-REG_WRITE(GPIO_OUT_W1TS_REG, (1 << BLINK_GPIO));}
+    if (s_led_state) {
+        REG_WRITE(GPIO_OUT_W1TS_REG, (1 << BLINK_GPIO));
+    } else {
+        REG_WRITE(GPIO_OUT_W1TC_REG, (1 << BLINK_GPIO));
+    }
+}
 
 static void configure_led(void)
 {
@@ -88,17 +94,28 @@ static void configure_led(void)
 #error "unsupported LED type"
 #endif
 
+static void led_timer_callback(void *arg)
+{
+    s_led_state = !s_led_state;
+    blink_led();
+}
+
 void app_main(void)
 {
-
-    /* Configure the peripheral according to the LED type */
     configure_led();
 
+    const esp_timer_create_args_t timer_args = {
+        .callback = &led_timer_callback,
+        .name = "led"
+    };
+
+    esp_timer_handle_t timer;
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(timer, 500000));
+
+    int counter = 0;
     while (1) {
-        ESP_LOGI(TAG, "DENEME 123 %s!", s_led_state == true ? "ON" : "OFF");
-        blink_led();
-        /* Toggle the LED state */
-        s_led_state = !s_led_state;
-        vTaskDelay(CONFIG_BLINK_PERIOD / portTICK_PERIOD_MS);
+        ESP_LOGI(TAG, "ana dongu: %d", counter++);
+        vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }

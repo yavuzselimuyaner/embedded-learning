@@ -6,6 +6,7 @@
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
+#include "esp_timer.h"
 
 static const char *TAG = "example";
 
@@ -23,6 +24,14 @@ static volatile uint32_t s_isr_count = 0;
 
 static void IRAM_ATTR button_isr_handler(void *arg)
 {
+    static int64_t last_us = 0;
+    int64_t now = esp_timer_get_time();
+
+    if (now - last_us < 50000) {
+        return;
+    }
+    last_us = now;
+
     s_isr_count++;
 }
 

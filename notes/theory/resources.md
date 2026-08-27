@@ -129,7 +129,7 @@ LEDs and buttons, so most of the early chapters are doable tonight. It assumes z
 background and never hides behind formulas.
 
 **Forrest Mims — *Getting Started in Electronics*** — a hand-drawn pocket book, cheap and
-about 130 pages. Covers current, voltage, resistance, Ohm''s law, diodes, transistors and
+about 130 pages. Covers current, voltage, resistance, Ohm's law, diodes, transistors and
 basic circuits with no fluff. Written in the 1980s and still one of the clearest
 introductions ever produced. Good as a quick reference to keep on the desk.
 
@@ -144,9 +144,6 @@ at exactly the "I write software but need to understand this circuit" level. Sta
 
 **Paul Scherz & Simon Monk — *Practical Electronics for Inventors*** — the best single
 book for a software person. Broad, practical, not a university textbook.
-
-**Charles Platt — *Make: Electronics*** — learn-by-doing, gentler, built around
-experiments. Good if you prefer building to reading.
 
 **Horowitz & Hill — *The Art of Electronics*** — the canonical reference. **Do not read it
 cover to cover.** Look things up in it. Buying it as a beginner and trying to work through

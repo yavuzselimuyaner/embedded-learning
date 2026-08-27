@@ -115,6 +115,30 @@ process, memory layout, secure boot. Good once the basics are solid.
 You never took the electronics course. You do not need to become a hardware designer, but
 you need enough to not be helpless in front of a circuit.
 
+### Start here if the basics are genuinely new
+
+If questions like *why do we need ground?*, *why does an LED need a resistor?*, *why is
+one LED leg longer?* do not have instant answers yet, start with a real beginner book
+rather than a reference.
+
+**Charles Platt — *Make: Electronics*** — the best first electronics book for someone who
+learns by building. Every concept arrives through an experiment you actually perform:
+short a battery and watch a fuse blow, burn out an LED on purpose to see why the resistor
+matters, build a circuit and then measure it. You already own a breadboard, resistors,
+LEDs and buttons, so most of the early chapters are doable tonight. It assumes zero
+background and never hides behind formulas.
+
+**Forrest Mims — *Getting Started in Electronics*** — a hand-drawn pocket book, cheap and
+about 130 pages. Covers current, voltage, resistance, Ohm''s law, diodes, transistors and
+basic circuits with no fluff. Written in the 1980s and still one of the clearest
+introductions ever produced. Good as a quick reference to keep on the desk.
+
+**All About Circuits — *Lessons in Electric Circuits*** — free, online, complete
+multi-volume textbook. Volume I (DC) covers exactly the fundamentals above. Use it when
+you want the proper explanation of something a beginner book skimmed.
+
+Then move on to:
+
 **build-electronic-circuits.com** and **electronics-tutorials.ws** — free, practical, aimed
 at exactly the "I write software but need to understand this circuit" level. Start here.
 

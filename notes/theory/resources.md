@@ -199,6 +199,35 @@ practice.
 **CircuitVerse** — `circuitverse.org`. Browser digital-logic simulator: gates, flip-flops,
 counters, state machines. Relevant if the digital design course needs refreshing.
 
+### Is there a LeetCode or TryHackMe for embedded?
+
+No, and the reason is worth understanding.
+
+LeetCode works because the problem is pure computation: input in, output out, identical
+everywhere. TryHackMe works because the target virtualises — a vulnerable machine in a
+browser is the real thing.
+
+Embedded is defined by physical hardware, timing, and analogue reality. The part that
+virtualises cleanly (logic, algorithms) is really just C programming. The part that is
+actually hard — the sensor does not answer, the pin is not making contact, the bus is
+noisy — is exactly what a simulator hides. So no such platform ever formed.
+
+Closest equivalents by format:
+
+| Want | Closest thing |
+|---|---|
+| Structured course, lessons + quizzes + certificate | **Nordic Developer Academy**, **Microchip University** — both free |
+| Graded exercises with progression | **Exercism** C track (free, mentored), **HackerRank** C domain |
+| Hands-on lab you can poke at | **Wokwi** project gallery |
+| Gamified levels | **Microcorruption** (`microcorruption.com`) — a browser MSP430 debugger puzzle game. Security-flavoured, but excellent practice at reading assembly and driving a debugger. |
+
+The deeper point: embedded interviews do not test puzzle-solving. They test **concepts**
+(what does `volatile` guarantee, why must an ISR be short, why does I2C need pull-ups) and
+**what you have actually built**. So preparation is a question bank plus real projects, not
+grinding problems.
+
+The self-test questions at the end of each file in this directory are that question bank.
+
 ### Exercises that need nothing but `gcc`
 
 All of these are real firmware skills, testable on a laptop:

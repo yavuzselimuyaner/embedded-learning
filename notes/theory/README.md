@@ -11,6 +11,8 @@ Hardware-independent material. Readable anywhere, no board required.
 
 Each file ends with questions to self-test against.
 
+**No board with you?** See the *Practising from a PC* section in [resources.md](resources.md) — Wokwi simulates ESP-IDF projects with virtual sensors, and Compiler Explorer shows what the compiler really does with your C.
+
 ## Practising without hardware
 
 Most of `embedded-c.md` compiles with plain `gcc` on a PC:

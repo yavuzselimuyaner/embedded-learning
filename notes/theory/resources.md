@@ -156,6 +156,64 @@ and it covers most of what firmware work demands.
 
 ---
 
+## Practising from a PC, with no hardware
+
+There is no LeetCode for embedded systems. But these are genuinely useful when the board
+is not in front of you.
+
+**Wokwi** — `wokwi.com`. Browser-based microcontroller simulator. **Supports ESP-IDF
+projects**, not just Arduino, and its parts library includes I2C sensors (MPU6050,
+BMP280, SSD1306 displays), LEDs, buttons, and logic-analyser output. There is also a VS
+Code extension that simulates a locally built project.
+
+Its real value is **isolating software from hardware**. If a driver works against a
+simulated sensor, the code is correct, and any failure on the desk is physical — wiring,
+power, or contact. That is the hardest distinction to make without instruments.
+
+Limits: timing is not cycle-accurate and not every peripheral is modelled. It will not
+show you what a real bus looks like, but it will tell you whether your logic is sound.
+
+**Compiler Explorer** — `godbolt.org`. Paste C, pick a compiler (xtensa and ARM targets
+included), see the generated assembly instantly. The fastest way to actually understand:
+
+- what `volatile` changes in the emitted code
+- what `-O0` versus `-O2` does to a delay loop
+- why a read-modify-write is three instructions
+- what a `static inline` costs compared to a macro
+
+Ten minutes here explains more about `volatile` than any article.
+
+**Falstad Circuit Simulator** — `falstad.com/circuit`. Interactive analogue circuit
+simulator that animates current as moving dots. Build a voltage divider, an LED with a
+series resistor, a pull-up — then vary a value and watch what changes. Good for building
+intuition about the electronics fundamentals.
+
+**Exercism — C track** — `exercism.org`. Structured C exercises with free mentor feedback.
+Better than LeetCode for this purpose because the focus is idiomatic C rather than
+algorithm puzzles.
+
+**LeetCode / HackerRank in C** — useful, but they train algorithm interviews, not firmware.
+Worth doing if you also want general software interviews; do not mistake it for embedded
+practice.
+
+**CircuitVerse** — `circuitverse.org`. Browser digital-logic simulator: gates, flip-flops,
+counters, state machines. Relevant if the digital design course needs refreshing.
+
+### Exercises that need nothing but `gcc`
+
+All of these are real firmware skills, testable on a laptop:
+
+- Implement a ring buffer and unit-test it, including wrap-around and full/empty cases
+- Write `set_bits`, `clear_bits`, `extract_field` helpers and test the edge cases
+- Build a state machine with a function-pointer table
+- Write a parser for a protocol frame — header, length, payload, checksum — then feed it
+  corrupted input and prove it never reads out of bounds
+- Reorder a struct's members and print `sizeof` before and after
+- Implement `memcpy`, then a version that handles overlapping regions
+- Compile a function at `-O0` and `-O2` in Compiler Explorer and explain every difference
+
+---
+
 ## Testing and code quality (Block 7)
 
 **James Grenning — *Test Driven Development for Embedded C*** (Pragmatic Bookshelf) — the

@@ -26,6 +26,7 @@ Bare-metal and RTOS firmware practice on an **ESP32-S3** using **ESP-IDF v6.0.2*
 |---|---|
 | `hello_world` | Toolchain bring-up, serial monitor, build size analysis, partition table |
 | `blink` | GPIO output via driver API, then the same LED driven by direct register writes |
+| `wokwi_iot_sensor` | Simulated IoT node (classic ESP32, Arduino + esp-mqtt): DHT22 + MPU6050 + OLED, web server, MQTT over WSS with TLS |
 
 ## Notes
 

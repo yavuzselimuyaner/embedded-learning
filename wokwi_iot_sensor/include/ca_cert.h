@@ -1,8 +1,8 @@
-// ISRG Root X1 (Let's Encrypt kök sertifikası), geçerlilik: 2035-06-04
-// Broker'ın sertifika zinciri bu köke dayanıyor; ESP32 sunucuyu bununla doğrular.
+// ISRG Root X1 (Let's Encrypt root certificate), valid until 2035-06-04.
+// The broker's chain ends at this root; the ESP32 verifies the server against it.
 #pragma once
 
-static const char CA_SERTIFIKA[] =
+static const char CA_CERT[] =
   "-----BEGIN CERTIFICATE-----\n"
   "MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAwTzELMAkGA1UE\n"
   "BhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2VhcmNoIEdyb3VwMRUwEwYDVQQD\n"

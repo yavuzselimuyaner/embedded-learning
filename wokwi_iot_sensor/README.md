@@ -1,484 +1,485 @@
-# wokwi_iot_sensor: Sensörden İnternete Bir IoT Cihazı
+# wokwi_iot_sensor: From a Sensor to the Internet
 
-Bu proje tamamen [Wokwi](https://wokwi.com) simülatöründe yapıldı. Cihaz sensörleri okuyor, OLED
-ekrana yazıyor, veriyi web sayfasında gösteriyor ve internetteki bir MQTT broker'ına gönderiyor.
-Broker'dan gelen komutları da ekranda gösteriyor.
+A small IoT node built entirely in the [Wokwi](https://wokwi.com) simulator. The device reads
+its sensors, draws them on an OLED, serves them on a web page and publishes them to an MQTT
+broker on the internet. It also shows commands that come back from the broker.
 
-Bu dosya bir konu anlatımı gibi yazıldı. Her bölüm bir kavramı, o kavramın koddaki yerini ve
-nedenini anlatıyor. Sonda kendini test etmen için sorular var.
+This file is written as a tutorial. Each section covers one concept: what it is, where it
+appears in the code and why it is done that way. Self-check questions are at the end.
 
-> **Not:** Bu proje klasik **ESP32 DevKit** üzerinde **Arduino framework** (PlatformIO) kullanıyor.
-> Reponun geri kalanı ESP32-S3 ve ESP-IDF ile yazıldı. MQTT kısmı ise zaten ESP-IDF'in kendi
-> istemcisini (`esp-mqtt`) kullanıyor.
-
----
-
-## İçindekiler
-
-0. [Genel resim](#0-genel-resim)
-1. [I2C: iki telden birçok cihaz](#1-i2c-iki-telden-birçok-cihaz)
-2. [Kütüphanesiz sensör okuma: register'lar](#2-kütüphanesiz-sensör-okuma-registerlar)
-3. [DHT22: kendi protokolü olan sensör](#3-dht22-kendi-protokolü-olan-sensör)
-4. [`delay()` yerine `millis()`](#4-delay-yerine-millis)
-5. [WiFi ve web sunucusu](#5-wifi-ve-web-sunucusu)
-6. [MQTT: aracı üzerinden haberleşme](#6-mqtt-aracı-üzerinden-haberleşme)
-7. [Engelli ağda hata ayıklama](#7-engelli-ağda-hata-ayıklama)
-8. [WebSocket ve TLS](#8-websocket-ve-tls)
-9. [İki görev, bir değişken: yarış durumu](#9-iki-görev-bir-değişken-yarış-durumu)
-10. [Kendini test et](#10-kendini-test-et)
-11. [Çalıştırma](#11-çalıştırma)
+> **Note:** This project uses a classic **ESP32 DevKit** with the **Arduino framework**
+> (PlatformIO). The rest of this repo uses ESP32-S3 with ESP-IDF. The MQTT part already uses
+> ESP-IDF's own client (`esp-mqtt`).
 
 ---
 
-## 0. Genel resim
+## Contents
+
+0. [The big picture](#0-the-big-picture)
+1. [I2C: many devices on two wires](#1-i2c-many-devices-on-two-wires)
+2. [Reading a sensor without a library: registers](#2-reading-a-sensor-without-a-library-registers)
+3. [DHT22: a sensor with its own protocol](#3-dht22-a-sensor-with-its-own-protocol)
+4. [`millis()` instead of `delay()`](#4-millis-instead-of-delay)
+5. [Wi-Fi and a web server](#5-wi-fi-and-a-web-server)
+6. [MQTT: talking through a broker](#6-mqtt-talking-through-a-broker)
+7. [Debugging a blocked network](#7-debugging-a-blocked-network)
+8. [WebSocket and TLS](#8-websocket-and-tls)
+9. [Two tasks, one variable: race conditions](#9-two-tasks-one-variable-race-conditions)
+10. [Self-check](#10-self-check)
+11. [Running it](#11-running-it)
+
+---
+
+## 0. The big picture
 
 ```
- DHT22 ──(tek tel, GPIO15)──┐
-                            │
- MPU6050 ──┐                ▼
-           ├─(I2C: 21/22)─ ESP32 ──WiFi──▶ İnternet ──▶ MQTT Broker ──▶ Tarayıcı / telefon
- OLED ─────┘                │                               ▲
-                            │                               │
-                            └── Web sunucusu (port 80)      └── Komut: "merhaba" ──▶ OLED
+ DHT22 ──(single wire, GPIO15)──┐
+                                │
+ MPU6050 ──┐                    ▼
+           ├─(I2C: 21/22)──── ESP32 ──Wi-Fi──▶ Internet ──▶ MQTT broker ──▶ Browser / phone
+ OLED ─────┘                    │                               ▲
+                                │                               │
+                                └── Web server (port 80)        └── Command "hello" ──▶ OLED
 ```
 
-| Parça | Bağlantı | Görevi |
+| Part | Connection | Role |
 |---|---|---|
-| DHT22 | GPIO15, 10 kΩ pull-up | Sıcaklık ve nem |
-| MPU6050 | I2C, adres 0x68 | İvme (x, y, z) |
-| SSD1306 OLED | I2C, adres 0x3C | 128×64 ekran |
+| DHT22 | GPIO15, 10 kΩ pull-up | Temperature and humidity |
+| MPU6050 | I2C, address 0x68 | Acceleration (x, y, z) |
+| SSD1306 OLED | I2C, address 0x3C | 128×64 display |
 
-Proje üç aşamada kuruldu:
-1. **Yerel:** Sensörü oku, ekrana yaz.
-2. **Aynı ağ:** Tarayıcıdan ESP32'nin IP adresine gidip veriyi gör.
-3. **İnternet:** Veriyi broker'a gönder, dünyanın her yerinden izle ve komut gönder.
+The project was built in three stages:
+1. **Local:** read the sensors and show the values on the display.
+2. **Same network:** open the ESP32's IP address in a browser to see the data.
+3. **Internet:** publish to a broker, then watch from anywhere and send commands back.
 
 ---
 
-## 1. I2C: iki telden birçok cihaz
+## 1. I2C: many devices on two wires
 
-### Kavram
-I2C iki telli bir **ortak hat (bus)**:
-- **SDA:** veri
-- **SCL:** saat, ritmi ESP32 belirler
+### Concept
+I2C is a two-wire shared **bus**:
+- **SDA:** data
+- **SCL:** clock, driven by the ESP32
 
-Bütün cihazlar bu iki tele paralel bağlanır. Her cihazın sabit bir **adresi** vardır. ESP32
-**master**, sensörler **slave**'dir. Konuşmayı her zaman master başlatır.
+Every device hangs off the same two wires, and each one has a fixed **address**. The ESP32 is
+the **controller** (master) and the sensors are **targets** (slaves). The controller always
+starts the conversation.
 
-Bir sınıfta yoklama gibi düşünebilirsin:
+Think of it as a roll call:
 
 ```
-ESP32:   "0x68, orada mısın?"
-MPU6050: "Buradayım"          ← buna ACK denir
-ESP32:   "0x50, orada mısın?"
-(sessizlik)                   ← buna NACK denir, o adreste kimse yok
+ESP32:   "0x68, are you there?"
+MPU6050: "Here"                 ← this is an ACK
+ESP32:   "0x50, are you there?"
+(silence)                       ← this is a NACK: nobody at that address
 ```
 
-### Pull-up direnci neden var?
-I2C hatları **open-drain** çalışır: cihazlar hattı sadece 0'a çekebilir, 1'e itemez. Hattı 1'e
-çeken şey pull-up dirençleridir. Direnç yoksa ya da bağlı değilse hat hep 0'da kalır ve
-iletişim kurulamaz. Gerçek devrede I2C sorunlarının en sık sebebi budur. Wokwi'de pull-up'lar
-hazır geldiği için bu sorun hiç çıkmaz.
+### Why pull-up resistors?
+I2C lines are **open-drain**, so devices can only pull a line down to 0 and never drive it up
+to 1. The pull-up resistors are what bring the line back to 1. If they are missing or not
+connected, the line stays at 0 and nothing can talk. On real hardware this is the most common
+cause of I2C problems. Wokwi provides pull-ups automatically, so it never shows up there.
 
-### I2C tarayıcı: bir teşhis aracı
+### The I2C scanner as a diagnostic tool
 ```cpp
-for (uint8_t adres = 1; adres < 127; adres++) {
-  Wire.beginTransmission(adres);
-  if (Wire.endTransmission() == 0) {   // 0 = cihaz ACK verdi
-    Serial.printf("Cihaz bulundu: 0x%02X\n", adres);
+for (uint8_t addr = 1; addr < 127; addr++) {
+  Wire.beginTransmission(addr);
+  if (Wire.endTransmission() == 0) {   // 0 = device ACKed
+    Serial.printf("Device found at 0x%02X\n", addr);
   }
 }
 ```
-Tarayıcı her adresi deneyip cevap vereni listeler. Asıl değeri, hatayı **iki katmana ayırmasıdır**:
+The scanner probes every address and lists the ones that answer. Its real value is that it
+**splits a failure into two layers**:
 
-| Tarayıcı sonucu | Anlamı | Nereye bakmalı |
+| Scanner result | Meaning | Where to look |
 |---|---|---|
-| Cihaz **bulunamadı** | Fiziksel iletişim yok | Kablo, pin, pull-up, besleme, ortak GND |
-| Cihaz **bulundu** | Kablolama sağlam | Yazılım: yanlış register, sensör uyandırılmamış... |
+| **Nothing found** | No physical communication | Wiring, pins, pull-ups, power, common ground |
+| **Device found** | The wiring is fine | Software: wrong register, sensor still asleep... |
 
-**Wokwi'nin rolü:** Simülatörde kablolar kusursuzdur. Kod orada çalışıp gerçek kartta
-çalışmıyorsa, sorun donanımdadır. Böylece yazılım ile donanım birbirinden ayrılmış olur.
+**Why Wokwi helps:** the simulated wiring is perfect. If the code works in Wokwi but not on the
+real board, the problem is in the hardware. This separates software faults from hardware faults.
 
 ---
 
-## 2. Kütüphanesiz sensör okuma: register'lar
+## 2. Reading a sensor without a library: registers
 
-### Kavram
-Sensörün içi numaralı küçük hücrelerden oluşur. Bunlara **register** denir. Bazılarına yazarak
-sensörü ayarlarsın, bazılarından okuyarak ölçüm alırsın. Hangi register'ın ne işe yaradığı
-**datasheet'te** (MPU-6050 Register Map) yazar.
+### Concept
+Inside, a sensor is a set of small numbered cells called **registers**. You write some of them
+to configure the sensor and read others to get measurements. The **datasheet** tells you what
+each register does. For this sensor it is the MPU-6050 Register Map.
 
-Kullandığımız register'lar:
+Registers used here:
 
-| Register | Adres | Ne işe yarıyor |
+| Register | Address | Purpose |
 |---|---|---|
-| `WHO_AM_I` | 0x75 | Kimlik. Her zaman 0x68 döner |
-| `PWR_MGMT_1` | 0x6B | Güç yönetimi. Sensör açılışta **uyku modunda** gelir |
-| `ACCEL_XOUT_H` | 0x3B | İvme verisinin başladığı yer (6 byte: X, Y, Z) |
+| `WHO_AM_I` | 0x75 | Identity; always reads 0x68 |
+| `PWR_MGMT_1` | 0x6B | Power management; the chip powers up **asleep** |
+| `ACCEL_XOUT_H` | 0x3B | Start of the acceleration data (6 bytes: X, Y, Z) |
 
-### Üç adım
-**1. Kimlik sor:** Doğru cihazla mı konuşuyorum?
+### Three steps
+**1. Ask for its identity** to confirm you are talking to the right chip.
 ```cpp
-registerOku(0x68, 0x75, &kimlik, 1);   // kimlik == 0x68 ise doğru cihaz
+readRegisters(0x68, 0x75, &id, 1);   // id == 0x68 means the right chip
 ```
 
-**2. Uyandır:** Uyku biti temizlenmezse sensör hep 0 döndürür. Bunu datasheet'i okumadan
-bilemezsin.
+**2. Wake it up.** Until the sleep bit is cleared, every reading is 0. Only the datasheet tells
+you this.
 ```cpp
-registerYaz(0x68, 0x6B, 0x00);
+writeRegister(0x68, 0x6B, 0x00);
 ```
 
-**3. Oku ve dönüştür:**
+**3. Read and convert:**
 ```cpp
-registerOku(0x68, 0x3B, ham, 6);
-ax = (int16_t)(ham[0] << 8 | ham[1]) / 16384.0;
+readRegisters(0x68, 0x3B, raw, 6);
+ax = (int16_t)(raw[0] << 8 | raw[1]) / 16384.0;
 ```
-- Her eksen **16 bit**, iki byte'a bölünmüş: önce yüksek byte (H), sonra düşük byte (L).
-  `<< 8` ile yüksek byte'ı sola kaydırıp düşük byte ile birleştiriyoruz. Önce yüksek byte'ın
-  geldiği bu sıraya **big-endian** denir.
-- `(int16_t)`: İvme negatif olabilir, bu yüzden sayı **işaretli** yorumlanmalı.
-- `/ 16384.0`: Varsayılan ±2g aralığında 1g = 16384. Bu, ham sayıyı fiziksel birime çevirir.
+- Each axis is **16 bits** split into two bytes, high byte (H) first and low byte (L) second.
+  `<< 8` shifts the high byte up so it can be combined with the low one. This high-byte-first
+  order is called **big-endian**.
+- `(int16_t)`: acceleration can be negative, so the value must be read as **signed**.
+- `/ 16384.0`: in the default ±2 g range, 1 g = 16384. This converts the raw count to a
+  physical unit.
 
-### Okuma işlemi nasıl yapılıyor? (repeated START)
+### How the read works (repeated START)
 ```cpp
-Wire.beginTransmission(adres);
-Wire.write(reg);                  // "0x3B'den okumak istiyorum"
-Wire.endTransmission(false);      // false: hattı bırakma (STOP gönderme)
-Wire.requestFrom(adres, 6);       // şimdi 6 byte oku
+Wire.beginTransmission(addr);
+Wire.write(reg);                  // "I want to read from 0x3B"
+Wire.endTransmission(false);      // false: keep the bus (no STOP)
+Wire.requestFrom(addr, 6);        // now read 6 bytes
 ```
-Önce hangi register'dan okunacağı **yazılır**, sonra hat bırakılmadan **okunur**. Sensör,
-register adresini her byte'tan sonra kendisi bir artırır. Bu sayede 6 byte tek seferde gelir.
+First you **write** which register to start from, then you **read** without releasing the bus.
+The sensor advances its register pointer after every byte, so all 6 bytes arrive in one go.
 
-> Kütüphaneler de arkada tam olarak bunu yapıyor. Datasheet'i okuyup register'a yazabilen biri
-> her sensörü kullanabilir.
+> Sensor libraries do exactly this under the hood. If you can read a datasheet and write a
+> register, you can drive any sensor.
 
 ---
 
-## 3. DHT22: kendi protokolü olan sensör
+## 3. DHT22: a sensor with its own protocol
 
-DHT22, I2C ya da SPI kullanmaz. **Tek telli, kendine özgü** bir protokolü vardır. Burada
-kütüphane kullandık, çünkü protokol hassas zamanlama (mikrosaniye) gerektiriyor.
+The DHT22 uses neither I2C nor SPI. It has its own **single-wire protocol** with microsecond
+timing, which is why a library handles it here.
 
-Bilmen gereken iki şey:
-- **En fazla 2 saniyede bir okunabilir.** Daha sık okursan hata ya da eski değer alırsın.
-- **Veri hattı pull-up ister.** Devredeki 10 kΩ direnç bunun için.
+Two things to know:
+- **Read it at most once every 2 seconds.** Reading faster gives errors or stale values.
+- **The data line needs a pull-up.** The 10 kΩ resistor in the circuit provides it.
 
-İlk sürümde DHT **GPIO3**'e bağlıydı. GPIO3, seri portun **RX** pini olduğu için
-`Serial.begin()` ile çakışıyordu. Bu yüzden GPIO15'e taşındı.
-**Ders:** Pin seçmeden önce o pinin başka bir görevi olup olmadığına bak (UART, boot pinleri,
-flash pinleri).
+The first version had the DHT on **GPIO3**. That pin is the serial port's **RX**, so it clashed
+with `Serial.begin()`, and the sensor was moved to GPIO15.
+**Lesson:** before choosing a pin, check whether it already has another role, such as UART,
+boot strapping or flash.
 
 ---
 
-## 4. `delay()` yerine `millis()`
+## 4. `millis()` instead of `delay()`
 
-### Sorun
+### The problem
 ```cpp
 void loop() {
-  delay(2000);        // 2 saniye boyunca işlemci HİÇBİR ŞEY yapmaz
-  sensorOku();
+  delay(2000);        // the CPU does NOTHING for 2 seconds
+  readSensor();
 }
 ```
-Web sunucusu eklenince `delay()` sorun olur. Sunucu gelen istekleri ancak
-`server.handleClient()` çağrıldığında işleyebilir. `delay()` bekledikçe tarayıcı da cevap
-alamadan bekler.
+This breaks once a web server is added. The server only answers requests while
+`server.handleClient()` is running, so during a `delay()` the browser just waits.
 
-### Çözüm: beklemek yerine saate bak
+### The fix: check the clock instead of waiting
 ```cpp
 void loop() {
-  server.handleClient();                    // her turda: isteklere cevap ver
+  server.handleClient();                    // every pass: answer requests
 
-  static unsigned long son = 0;
-  if (millis() - son < 500) return;         // 500 ms dolmadıysa çık
-  son = millis();
+  static unsigned long last = 0;
+  if (millis() - last < 500) return;        // 500 ms not up yet, leave
+  last = millis();
 
-  sensorOku();                              // 500 ms'de bir
+  readSensor();                             // runs every 500 ms
 }
 ```
-`millis()`, kart açıldığından beri geçen milisaniyeyi verir. `loop()` saniyede binlerce kez
-döner ama işler yalnızca zamanı geldiğinde yapılır. Birden çok iş farklı aralıklarla
-çalışabilir: ivme 500 ms'de, DHT 2 sn'de, MQTT gönderimi 5 sn'de bir.
+`millis()` returns the milliseconds since boot. `loop()` spins thousands of times per second,
+but each job only runs when it is due. Different jobs can run at different rates: acceleration
+every 500 ms, the DHT every 2 s and MQTT every 5 s.
 
-> `millis() - son` yazımı taşmaya karşı güvenlidir. Sayaç yaklaşık 49 günde bir sıfıra döner
-> ama işaretsiz çıkarma bu durumda da doğru sonucu verir.
+> `millis() - last` is safe across overflow. The counter wraps about every 49 days, and unsigned
+> subtraction still gives the right answer.
 
-**İleride:** FreeRTOS'ta aynı sorun, her işi ayrı bir **görev (task)** yaparak çözülür.
+**Later:** in FreeRTOS the same problem is solved by giving each job its own **task**.
 
 ---
 
-## 5. WiFi ve web sunucusu
+## 5. Wi-Fi and a web server
 
-### İstemci ve sunucu
+### Client and server
 ```
-Tarayıcı (istemci) ──"GET /"──▶ ESP32 (sunucu, port 80)
-Tarayıcı           ◀──HTML───── ESP32
+Browser (client) ──"GET /"──▶ ESP32 (server, port 80)
+Browser          ◀──HTML───── ESP32
 ```
-- **IP adresi:** Ağdaki cihazın adresi (ör. `10.13.37.2`).
-- **Port:** O cihazdaki "kapı numarası". Web için 80 (HTTP) ve 443 (HTTPS) kullanılır.
-- **Yol (path):** `/` sayfayı, `/veri` JSON verisini döndürür.
+- **IP address:** the device's address on the network (e.g. `10.13.37.2`).
+- **Port:** a numbered "door" on that device. The web uses 80 (HTTP) and 443 (HTTPS).
+- **Path:** `/` returns the page and `/data` returns JSON.
 
 ```cpp
-server.on("/", anaSayfa);       // "/" istenirse anaSayfa() çalışsın
-server.on("/veri", veriJson);   // "/veri" istenirse JSON döndür
+server.on("/", handleRoot);       // when "/" is requested, run handleRoot()
+server.on("/data", handleData);   // when "/data" is requested, return JSON
 ```
 
-Neden JSON? İnsan için HTML, **program** için JSON. Başka bir yazılım `/veri` adresinden veriyi
-kolayca alıp işleyebilir.
+HTML is for people and JSON is for **programs**. Other software can fetch `/data` and parse it
+easily.
 
-### Wokwi'de port yönlendirme
-ESP32'nin IP adresi, Wokwi'nin içindeki sanal ağa ait. Senin bilgisayarın o ağı göremez.
-`wokwi.toml` içindeki şu ayar bir köprü kuruyor:
+### Port forwarding in Wokwi
+The ESP32's IP belongs to Wokwi's virtual network, which your computer cannot see. This part of
+`wokwi.toml` builds a bridge:
 ```toml
 [[net.forward]]
-from = "localhost:8180"   # bilgisayarındaki kapı
-to = "target:80"          # simülasyondaki ESP32'nin kapısı
+from = "localhost:8180"   # a port on your computer
+to = "target:80"          # port 80 on the simulated ESP32
 ```
-> Wokwi `wokwi.toml` dosyasını **sadece simülasyon başlarken** okur. Değiştirirsen
-> simülatörü yeniden başlatman gerekir.
+> Wokwi reads `wokwi.toml` **only when the simulation starts**. Restart the simulator after
+> editing it.
 
-### Bu yöntemin sınırı
-Sadece **aynı ağdayken** çalışır. ESP32 evdeyken sen okuldaysan ona ulaşamazsın, çünkü ev modemi
-dışarıdan gelen bağlantıları içeri almaz. 100 cihaz olsa her birine tek tek sormak da gerekir.
-MQTT bu iki sorunu çözüyor.
+### The limitation
+This only works **on the same network**. If the ESP32 is at home and you are elsewhere, you
+cannot reach it, because the home router blocks incoming connections. With 100 devices you would
+also have to poll each one. MQTT solves both problems.
 
 ---
 
-## 6. MQTT: aracı üzerinden haberleşme
+## 6. MQTT: talking through a broker
 
-### Kavram
-Arada bir **aracı sunucu (broker)** var:
+### Concept
+A middleman server, the **broker**, sits in between:
 ```
-ESP32 ──yayınla──▶  BROKER  ──ilet──▶  Abone olan herkes
-                 (internette)
+ESP32 ──publish──▶  BROKER  ──forward──▶  Every subscriber
+                 (on the internet)
 ```
-- ESP32 kimsenin sormasını beklemez, veriyi **kendisi gönderir**.
-- Broker mesajı, o konuyu dinleyen herkese iletir.
-- ESP32 kimin dinlediğini bilmez. Sen de ESP32'nin nerede olduğunu bilmezsin. İkiniz de
-  sadece broker'a bağlısınız.
+- The ESP32 does not wait to be asked. It **pushes** its data.
+- The broker forwards each message to everyone listening on that topic.
+- The ESP32 does not know who is listening, and you do not need to know where the ESP32 is.
+  Both sides only know the broker.
 
-**Neden çalışıyor?** Ağlar içeriden dışarıya giden bağlantılara izin verir, dışarıdan içeriye
-gelenleri engeller. Burada hem ESP32 hem sen broker'a **dışarıya doğru** bağlanıyorsunuz.
-Broker bir buluşma noktası.
+**Why this works:** networks allow outgoing connections and block incoming ones. Here the ESP32
+and you both connect **outward** to the broker, which acts as a meeting point.
 
-> Benzetme: WhatsApp grubu. ESP32 gruba yazıyor, WhatsApp sunucusu (broker) gruptaki herkese
-> iletiyor.
+> Analogy: a group chat. The ESP32 posts to the group and the chat server (the broker) delivers
+> the message to every member.
 
-### Temel kavramlar
+### Key concepts
 
-| Kavram | Anlamı | Bu projede |
+| Concept | Meaning | In this project |
 |---|---|---|
-| **Konu (topic)** | Mesajın gittiği "kanal", `/` ile hiyerarşik | `yavuz-sensordenemesi/esp32/veri` |
-| **Yayınla (publish)** | Bir konuya mesaj gönder | ESP32, 5 sn'de bir veri yayınlar |
-| **Abone ol (subscribe)** | Bir konuyu dinle | ESP32 `.../komut` konusunu dinler |
-| **Joker `#`** | "Bunun altındaki her şey" | `yavuz-sensordenemesi/esp32/#` üç konuyu birden dinler |
-| **Joker `+`** | Tek seviye | `+/esp32/veri` |
-| **Retained** | Broker son mesajı saklar, yeni gelen abone hemen görür | `durum` mesajı |
-| **Last Will (LWT)** | "Habersiz koparsam şunu yayınla" diye broker'a bırakılan mesaj | `cevrimdisi` |
-| **Keepalive** | Bu süre içinde ses gelmezse cihaz kopmuş sayılır | 15 sn |
-| **QoS** | Teslim garantisi: 0 = en fazla bir kez, 1 = en az bir kez, 2 = tam bir kez | veri 0, durum 1 |
+| **Topic** | The "channel" a message goes to; hierarchical with `/` | `yavuz-iot-sensor/esp32/data` |
+| **Publish** | Send a message to a topic | The ESP32 publishes every 5 s |
+| **Subscribe** | Listen to a topic | The ESP32 listens on `.../command` |
+| **Wildcard `#`** | "Everything below this" | `yavuz-iot-sensor/esp32/#` matches all three topics |
+| **Wildcard `+`** | Exactly one level | `+/esp32/data` |
+| **Retained** | The broker keeps the last message and sends it to new subscribers at once | `status` |
+| **Last Will (LWT)** | A message left with the broker: "publish this if I vanish" | `offline` |
+| **Keepalive** | Silence longer than this means the client is gone | 15 s |
+| **QoS** | Delivery guarantee: 0 = at most once, 1 = at least once, 2 = exactly once | data 0, status 1 |
 
-### Bu projedeki konular
+### Topics used
 
-| Konu | Yön | İçerik |
+| Topic | Direction | Payload |
 |---|---|---|
-| `.../veri` | ESP32 → broker | `{"sicaklik":24.0,"nem":40.0,"ax":0.00,"ay":0.00,"az":1.00}` |
-| `.../durum` | ESP32 → broker | `cevrimici` / `cevrimdisi` (retained) |
-| `.../komut` | broker → ESP32 | Kısa bir metin, OLED'de `> metin` olarak görünür |
+| `.../data` | ESP32 → broker | `{"temperature":24.0,"humidity":40.0,"ax":0.00,"ay":0.00,"az":1.00}` |
+| `.../status` | ESP32 → broker | `online` / `offline` (retained) |
+| `.../command` | broker → ESP32 | Short text, shown on the OLED as `> text` |
 
-### Cihaz takibi: retained ve Last Will birlikte
-1. ESP32 bağlanırken broker'a bir vasiyet bırakır: *"Kopursam `durum` konusuna `cevrimdisi` yaz."*
-2. Bağlanınca kendisi `cevrimici` yayınlar (retained).
-3. Elektrik kesilirse ESP32 veda edemez. Broker 15 saniye ses alamayınca vasiyeti kendisi
-   yayınlar.
-4. Durum mesajı retained olduğu için sonradan bağlanan biri de cihazın durumunu hemen görür.
+### Presence tracking: retained plus Last Will
+1. On connect, the ESP32 leaves a will with the broker: *"if I drop, publish `offline` to
+   `status`."*
+2. Once connected, it publishes `online` itself as a retained message.
+3. If power is cut, the ESP32 cannot say goodbye. After 15 s of silence the broker publishes the
+   will on its behalf.
+4. Because the status is retained, anyone who subscribes later sees the device's state
+   immediately.
 
-### Kütüphanenin yaptığı iş
-`esp-mqtt` bağlantı koparsa **kendi kendine yeniden bağlanır**. Olaylar bir fonksiyona gelir:
+### What the library does
+`esp-mqtt` **reconnects on its own** when the link drops. Events arrive in a callback:
 ```cpp
-void mqttOlay(..., int32_t olayId, void *olayVerisi) {
-  switch (olayId) {
-    case MQTT_EVENT_CONNECTED:    // bağlandı → durum yayınla, komuta abone ol
-    case MQTT_EVENT_DISCONNECTED: // koptu → kütüphane tekrar deneyecek
-    case MQTT_EVENT_DATA:         // abone olunan konuya mesaj geldi
-    case MQTT_EVENT_ERROR:        // hata
+void onMqttEvent(..., int32_t eventId, void *eventData) {
+  switch (eventId) {
+    case MQTT_EVENT_CONNECTED:    // publish status, subscribe to commands
+    case MQTT_EVENT_DISCONNECTED: // the library will retry
+    case MQTT_EVENT_DATA:         // a message arrived on a subscribed topic
+    case MQTT_EVENT_ERROR:        // something failed
   }
 }
 ```
-Bu yapıya **olay güdümlü (event-driven)** programlama denir. Sürekli "mesaj var mı?" diye
-sormazsın, mesaj gelince seni çağırırlar.
+This is **event-driven** programming. Instead of repeatedly asking whether a message has
+arrived, your code is called when one does.
 
 ---
 
-## 7. Engelli ağda hata ayıklama
+## 7. Debugging a blocked network
 
-Bu bölüm projenin en öğretici kısmı, çünkü gerçek işte de aynı şekilde yaşanır.
+This is the most instructive part of the project, because real work goes exactly like this.
 
-### Belirti
+### Symptom
 ```
-MQTT'ye baglaniliyor... basarisiz (durum -2)
+MQTT connect failed (state -2)
 ```
-`-2`, **TCP bağlantısının hiç kurulamadığı** anlamına gelir. Broker'a daha "merhaba" bile
-denemedi.
+`-2` means **the TCP connection itself failed**. The client never even got to say hello to the
+broker.
 
-### Olası sebepler
-- DNS: broker'ın adı IP adresine çevrilemiyor
-- Simülasyonun internet çıkışı hiç yok
-- Broker kapalı
-- Ağ, o portu engelliyor
+### Possible causes
+- DNS cannot resolve the broker's name
+- The simulation has no internet access
+- The broker is down
+- The network blocks that port
 
-### Tahmin etmek yerine ölçmek
-ESP32'ye açılışta çalışan bir **teşhis kodu** eklendi:
+### Measure, don't guess
+A boot-time **diagnostic** was added to the firmware:
 ```
-DNS: test.mosquitto.org -> 54.36.178.49     ← DNS çalışıyor
-  Port 80:   ACIK                           ← internet var
-  Port 1883: KAPALI                         ← MQTT portu engelli
-  Port 8883: KAPALI                         ← şifreli MQTT portu da engelli
+DNS: test.mosquitto.org -> 54.36.178.49     ← DNS works
+  Port 80:   OPEN                           ← internet works
+  Port 1883: CLOSED                         ← MQTT port blocked
+  Port 8883: CLOSED                         ← MQTT-over-TLS port blocked too
 ```
-Aynı test bilgisayardan da yapıldı (`Test-NetConnection`) ve **aynı sonuç** çıktı. Wokwi'nin
-VS Code eklentisi simülasyonun trafiğini bilgisayarın üzerinden çıkardığı için ESP32 de
-bilgisayarın bağlı olduğu ağın güvenlik duvarına takılıyor.
+The same test run from the host PC (`Test-NetConnection`) gave **the same result**. Wokwi's VS
+Code extension routes simulated traffic through the host, so the ESP32 hits the same firewall as
+the PC.
 
-**Sonuç:** Kod doğruydu. Ağ sadece web portlarına (80, 443) izin veriyordu. Okul, yurt ve iş
-yeri ağlarında bu sık görülür.
+**Conclusion:** the code was fine. The network only allowed web ports (80 and 443), which is
+common on school, dorm and corporate networks.
 
-### Genel ders
-Hata ayıklarken sorunu **katmanlara ayırıp her katmanı ayrı test et**:
+### The general lesson
+When debugging, **split the problem into layers and test each one on its own**:
 ```
-DNS çalışıyor mu? → İnternet var mı? → Bu port açık mı? → Protokol doğru mu? → Uygulama
+DNS works? → Internet works? → Port open? → Protocol right? → Application
 ```
-Her adım bir sonrakinin ön koşulu. I2C tarayıcının yaptığı da aynı şeydi.
+Each layer depends on the one before it. The I2C scanner applies the same idea.
 
 ---
 
-## 8. WebSocket ve TLS
+## 8. WebSocket and TLS
 
-### WebSocket: MQTT'yi web trafiği gibi göndermek
-Sadece 443 portu açık olduğu için MQTT mesajlarını **WebSocket** içine koyup 443'ten gönderdik.
-Mesajlar aynı, sadece farklı bir kapıdan geçiyor. Güvenlik duvarları bunu normal web trafiği
-olarak görür.
+### WebSocket: MQTT disguised as web traffic
+With only port 443 open, the MQTT packets were wrapped in a **WebSocket** and sent over 443.
+The messages are the same and only the door is different. Firewalls see ordinary web traffic.
 
-| Adres | Anlamı | Port |
+| URI scheme | Meaning | Port |
 |---|---|---|
-| `mqtt://` | Düz MQTT | 1883 |
-| `mqtts://` | Şifreli MQTT | 8883 |
-| `ws://` | WebSocket içinde MQTT | 80 |
-| `wss://` | Şifreli WebSocket içinde MQTT | 443 ← **bizimki** |
+| `mqtt://` | Plain MQTT | 1883 |
+| `mqtts://` | MQTT over TLS | 8883 |
+| `ws://` | MQTT over WebSocket | 80 |
+| `wss://` | MQTT over secure WebSocket | 443 ← **used here** |
 
-Kütüphane değişikliğinin sebebi de bu: PubSubClient WebSocket desteklemiyor. `esp-mqtt` ise
-destekliyor ve Arduino çekirdeğinin içinde zaten var.
+This is also why the library changed. PubSubClient cannot do WebSocket, but `esp-mqtt` can,
+and it already ships inside the Arduino core.
 
-### TLS: şifreleme ve kimlik doğrulama
-TLS iki iş yapar:
-1. **Şifreleme:** Aradaki kimse mesajları okuyamaz.
-2. **Kimlik doğrulama:** Konuştuğun sunucunun gerçekten o sunucu olduğunu kanıtlar.
+### TLS: encryption and identity
+TLS does two jobs:
+1. **Encryption:** nobody in between can read the messages.
+2. **Authentication:** it proves the server really is who it claims to be.
 
-İkinci iş **sertifika zinciri** ile yapılır:
+The second job relies on a **certificate chain**:
 ```
-public.cloud.shiftr.io  (sunucunun sertifikası)
-        ↑ imzalayan
-Let's Encrypt YR1       (ara sertifika)
-        ↑ imzalayan
-ISRG Root X1            (KÖK sertifika ← ESP32'nin güvendiği tek şey)
+public.cloud.shiftr.io  (server certificate)
+        ↑ signed by
+Let's Encrypt YR1       (intermediate)
+        ↑ signed by
+ISRG Root X1            (ROOT ← the only thing the ESP32 trusts)
 ```
-ESP32'ye sadece **kök sertifikayı** verdik (`include/ca_sertifika.h`). Sunucu bağlanırken
-zincirin geri kalanını kendisi gönderir, ESP32 de zincirin bu köke ulaşıp ulaşmadığını
-kontrol eder.
+The ESP32 is given only the **root certificate** (`include/ca_cert.h`). The server sends the
+rest of the chain during the handshake, and the ESP32 checks that it leads back to that root.
 
-### `setInsecure()` neden kötü?
-Bir ara `setInsecure()` kullanıldı. Bu yöntem şifrelemeyi korur ama **kimliği doğrulamaz**.
-Araya giren biri kendini broker olarak tanıtabilir ve ESP32 bunu fark etmez. Buna
-**ortadaki adam (man-in-the-middle)** saldırısı denir. Deneme için kabul edilebilir, üründe
-kabul edilemez.
+### Why `setInsecure()` is bad
+An earlier version used `setInsecure()`. That keeps the traffic encrypted but **skips identity
+verification**, so an attacker could pose as the broker and the ESP32 would not notice. This is a
+**man-in-the-middle** attack. It is acceptable for a quick test and never for a product.
 
-> Kök sertifikaların da son kullanma tarihi var. ISRG Root X1 2035'te sona eriyor. Gerçek
-> ürünlerde sertifikayı uzaktan güncelleyebilmek (OTA) bu yüzden önemli.
+> Root certificates expire too. ISRG Root X1 expires in 2035, which is one reason real devices
+> need a way to update certificates over the air (OTA).
 
 ---
 
-## 9. İki görev, bir değişken: yarış durumu
+## 9. Two tasks, one variable: race conditions
 
-### Durum
-`esp-mqtt` kendi **FreeRTOS görevinde** çalışıyor, `loop()` ise başka bir görevde. İkisi
-**aynı anda** çalışabilir:
+### The situation
+`esp-mqtt` runs in its own **FreeRTOS task**, and `loop()` runs in another. They can run **at
+the same time**:
 ```
-MQTT görevi:  komut geldi → sonKomut'a "merhaba" yazıyor...
-loop görevi:  ...tam o anda sonKomut'u okuyup ekrana basıyor
+MQTT task:  command arrives → writing "hello" into lastCommand...
+loop task:  ...reads lastCommand at that exact moment to draw it
 ```
-Yazma işlemi yarıdayken okuma yapılırsa ekranda yarım ya da bozuk bir metin çıkar. Buna
-**yarış durumu (race condition)** denir. Nadiren olur, tekrarlaması zordur, bu yüzden bulması da
-en zor hatalardandır.
+If the read lands halfway through the write, the screen shows a partial or garbled string. This
+is a **race condition**. It happens rarely and is hard to reproduce, which makes it one of the
+hardest kinds of bug to find.
 
-### Çözüm: kritik bölge
+### The fix: a critical section
 ```cpp
-portENTER_CRITICAL(&komutKilidi);
-memcpy(sonKomut, olay->data, n);     // bu arada kimse araya giremez
-portEXIT_CRITICAL(&komutKilidi);
+portENTER_CRITICAL(&commandLock);
+memcpy(lastCommand, event->data, n);   // nobody can interrupt this
+portEXIT_CRITICAL(&commandLock);
 ```
-Okuyan taraf da aynı kilidi kullanır ve metnin bir kopyasını alıp kilidi hemen bırakır:
+The reader takes the same lock, copies the string and releases the lock right away:
 ```cpp
-portENTER_CRITICAL(&komutKilidi);
-strcpy(komut, sonKomut);
-portEXIT_CRITICAL(&komutKilidi);
-display.printf("> %s", komut);       // uzun iş kilidin DIŞINDA
+portENTER_CRITICAL(&commandLock);
+strcpy(command, lastCommand);
+portEXIT_CRITICAL(&commandLock);
+display.printf("> %s", command);       // slow work stays OUTSIDE the lock
 ```
-**Kural:** Kritik bölgeyi olabildiğince kısa tut. İçindeyken kesmeler (interrupt) bekler.
+**Rule:** keep critical sections as short as possible, because interrupts wait while one is held.
 
-### `volatile` ne işe yarıyor?
+### What `volatile` is for
 ```cpp
-volatile bool mqttBagli = false;
+volatile bool mqttConnected = false;
 ```
-Derleyiciye "bu değişken başka bir yerden değişebilir, her seferinde bellekten yeniden oku"
-der. Tek bir `bool` için bu yeterli. Birden fazla byte'lık bir veri (metin gibi) için yetmez,
-kilit gerekir.
+This tells the compiler that something else may change the variable, so it must re-read it from
+memory every time. That is enough for a single `bool`. It is **not** enough for multi-byte data
+like a string, which needs a lock.
 
 ---
 
-## 10. Kendini test et
+## 10. Self-check
 
-Cevaplar yukarıdaki bölümlerde.
+The answers are in the sections above.
 
-1. I2C tarayıcı hiç cihaz bulamıyorsa ilk nereye bakarsın? Neden koda değil?
-2. MPU6050'yi uyandırmadan `0x3B` register'ından okursan ne görürsün?
-3. `ham[0] << 8 | ham[1]` ifadesini neden `(int16_t)` ile sarıyoruz?
-4. `loop()` içine `delay(2000)` koyarsan web sayfası neden yavaşlar?
-5. Web sunucusu yöntemiyle başka bir şehirden veriyi neden göremezsin? MQTT bunu nasıl çözüyor?
-6. Retained mesaj ile Last Will birlikte hangi sorunu çözüyor?
-7. `durum -2` hatasını aldığında sebebini bulmak için hangi adımları izlerdin?
-8. `setInsecure()` şifrelemeyi kapatıyor mu? Neyi kapatıyor?
-9. ESP32'ye neden sunucunun sertifikasını değil de kök sertifikayı veriyoruz?
-10. İki görev aynı metin değişkenine erişiyorsa `volatile` neden yetmez?
+1. The I2C scanner finds nothing. Where do you look first, and why not the code?
+2. What do you read from register `0x3B` if you never woke the MPU6050?
+3. Why is `raw[0] << 8 | raw[1]` cast to `(int16_t)`?
+4. Why does a `delay(2000)` in `loop()` make the web page slow?
+5. Why can't you see the data from another city with the web server approach, and how does MQTT
+   fix that?
+6. What problem do retained messages and Last Will solve together?
+7. You get `state -2`. What steps would you take to find the cause?
+8. Does `setInsecure()` turn off encryption? What does it turn off?
+9. Why give the ESP32 the root certificate rather than the server's own certificate?
+10. Two tasks share a string. Why is `volatile` not enough?
 
 ---
 
-## 11. Çalıştırma
+## 11. Running it
 
-Gereksinimler: VS Code, PlatformIO eklentisi, Wokwi eklentisi.
+Requirements: VS Code with the PlatformIO and Wokwi extensions.
 
 ```
-pio run                        # derle
-F1 → Wokwi: Start Simulator    # simülasyonu başlat
+pio run                        # build
+F1 → Wokwi: Start Simulator    # start the simulation
 ```
 
-| Ne | Nerede |
+| What | Where |
 |---|---|
-| Web sayfası | http://localhost:8180 |
-| JSON verisi | http://localhost:8180/veri |
-| Broker'ın canlı görünümü | https://public.cloud.shiftr.io |
+| Web page | http://localhost:8180 |
+| JSON data | http://localhost:8180/data |
+| Live broker view | https://public.cloud.shiftr.io |
 
-**Komut göndermek için** herhangi bir MQTT istemcisi kullanılabilir (ör. HiveMQ Web Client):
-host `public.cloud.shiftr.io`, port `443`, SSL açık, kullanıcı adı ve şifre `public` / `public`.
-`yavuz-sensordenemesi/esp32/komut` konusuna mesaj gönder.
+**To send a command**, use any MQTT client (e.g. HiveMQ Web Client): host
+`public.cloud.shiftr.io`, port `443`, SSL on, username and password `public` / `public`.
+Publish to `yavuz-iot-sensor/esp32/command`.
 
-> **Uyarı:** Broker herkese açık. Konu adını bilen herkes veriyi görebilir ve komut gönderebilir.
-> Deneme için sorun değil. Gerçek bir cihazda broker'ın kimlik doğrulaması olur ve her cihaz
-> sadece kendi konularına erişebilir.
+> **Warning:** the broker is public. Anyone who knows the topic can read the data or send
+> commands. That is fine for a demo. A real device would use an authenticated broker where each
+> device can access only its own topics.
 
-### Dosyalar
+### Files
 
-| Dosya | İçerik |
+| File | Contents |
 |---|---|
-| `src/main.cpp` | Tüm firmware |
-| `include/ca_sertifika.h` | ISRG Root X1 kök sertifikası |
-| `diagram.json` | Wokwi devre şeması |
-| `wokwi.toml` | Firmware yolu ve port yönlendirme |
-| `platformio.ini` | Kart, framework, kütüphaneler |
+| `src/main.cpp` | The whole firmware |
+| `include/ca_cert.h` | ISRG Root X1 root certificate |
+| `diagram.json` | Wokwi circuit |
+| `wokwi.toml` | Firmware path and port forwarding |
+| `platformio.ini` | Board, framework, libraries |

@@ -3,7 +3,7 @@ version = 1
 firmware = '.pio/build/esp32doit-devkit-v1/firmware.bin'
 elf = '.pio/build/esp32doit-devkit-v1/firmware.elf'
 
-# Tarayıcıdan http://localhost:8180 -> simülasyondaki ESP32'nin 80. portu
+# Browser at http://localhost:8180 -> port 80 of the simulated ESP32
 [[net.forward]]
 from = "localhost:8180"
 to = "target:80"

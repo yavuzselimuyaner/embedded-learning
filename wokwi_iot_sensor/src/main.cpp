@@ -4,154 +4,154 @@
 #include <DHT.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include "mqtt_client.h"   // ESP-IDF'in MQTT istemcisi (esp-mqtt), Arduino çekirdeğinde hazır geliyor
-#include "ca_sertifika.h"
+#include "mqtt_client.h"   // ESP-IDF's MQTT client (esp-mqtt), bundled with the Arduino core
+#include "ca_cert.h"
 
-// Ekran çözünürlüğü
+// Display resolution
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
-// Ekran nesnesi (I2C adresi genelde 0x3C'dir)
+// SSD1306 on I2C, address 0x3C, no reset pin
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-// DHT Ayarları
-#define DHTPIN 15
-#define DHTTYPE DHT22
-DHT dht(DHTPIN, DHTTYPE);
+// DHT22 on GPIO15 (GPIO3 is UART0 RX and clashes with Serial)
+#define DHT_PIN 15
+#define DHT_TYPE DHT22
+DHT dht(DHT_PIN, DHT_TYPE);
 
-// MPU6050 register'ları (datasheet: MPU-6000/6050 Register Map)
-#define MPU_ADDR      0x68  // AD0 GND'de ise 0x68, 3V3'te ise 0x69
-#define REG_PWR_MGMT1 0x6B  // Güç yönetimi, açılışta uyku modunda gelir
-#define REG_ACCEL_X_H 0x3B  // İvme verisinin başladığı register (6 byte: X, Y, Z)
-#define REG_WHO_AM_I  0x75  // Kimlik register'ı, 0x68 döner
-#define ACCEL_LSB_PER_G 16384.0  // Varsayılan ±2g aralığında 1g = 16384
+// MPU6050 registers (datasheet: MPU-6000/6050 Register Map)
+#define MPU_ADDR        0x68  // 0x68 with AD0 tied to GND, 0x69 with AD0 at 3V3
+#define REG_PWR_MGMT_1  0x6B  // Power management; the chip powers up in sleep mode
+#define REG_ACCEL_X_H   0x3B  // First accelerometer register (6 bytes: X, Y, Z)
+#define REG_WHO_AM_I    0x75  // Identity register, always reads 0x68
+#define ACCEL_LSB_PER_G 16384.0  // Default ±2 g range: 1 g = 16384 LSB
 
-bool mpuVar = false;
+bool mpuPresent = false;
 
-// WiFi: Wokwi'nin sanal erişim noktası, şifresiz, kanal 6
-const char *WIFI_AD = "Wokwi-GUEST";
-const char *WIFI_SIFRE = "";
+// Wi-Fi: Wokwi's virtual access point, open, channel 6
+const char *WIFI_SSID = "Wokwi-GUEST";
+const char *WIFI_PASSWORD = "";
 WebServer server(80);
 
-// MQTT: herkese açık deneme broker'ı (kullanıcı/şifre: public/public)
-// Ağ sadece 80/443 portlarına izin veriyor, MQTT'nin kendi portları (1883, 8883) kapalı.
-// Bu yüzden MQTT'yi WebSocket içinde, TLS ile 443'ten gönderiyoruz: wss://
+// MQTT: public test broker (user/password public/public).
+// The host network only allows ports 80/443; MQTT's own ports (1883, 8883) are blocked.
+// So MQTT is tunnelled over a TLS WebSocket on 443: wss://
 const char *MQTT_URI = "wss://public.cloud.shiftr.io:443";
-// Konu adları herkese açık, bu yüzden başkalarıyla karışmasın diye kendine özgü bir ön ek
-#define KONU_ONEK   "yavuz-sensordenemesi/esp32"
-#define KONU_VERI   KONU_ONEK "/veri"    // ESP32 buraya yayınlar
-#define KONU_DURUM  KONU_ONEK "/durum"   // çevrimiçi / çevrimdışı
-#define KONU_KOMUT  KONU_ONEK "/komut"   // ESP32 bunu dinler
+// Topics on a public broker are visible to everyone, so use a unique prefix
+#define TOPIC_PREFIX   "yavuz-iot-sensor/esp32"
+#define TOPIC_DATA     TOPIC_PREFIX "/data"      // device publishes readings here
+#define TOPIC_STATUS   TOPIC_PREFIX "/status"    // online / offline
+#define TOPIC_COMMAND  TOPIC_PREFIX "/command"   // device subscribes to this
 esp_mqtt_client_handle_t mqtt;
 
-// esp-mqtt kendi FreeRTOS görevinde (task) çalışır; bu değişkenlere iki görev birden erişir
-volatile bool mqttBagli = false;
-char sonKomut[32] = "";  // komut konusundan gelen son mesaj, OLED'de gösterilir
-portMUX_TYPE komutKilidi = portMUX_INITIALIZER_UNLOCKED;  // sonKomut'a aynı anda yazılıp okunmasın
+// esp-mqtt runs in its own FreeRTOS task, so these are touched by two tasks
+volatile bool mqttConnected = false;
+char lastCommand[32] = "";  // last message on the command topic, shown on the OLED
+portMUX_TYPE commandLock = portMUX_INITIALIZER_UNLOCKED;  // guards lastCommand
 
-// Son okunan değerler, hem ekran hem web sunucusu bunları kullanır
-float nem = NAN, sicaklik = NAN;
+// Latest readings, shared by the display, the web server and MQTT
+float humidity = NAN, temperature = NAN;
 float ax = 0, ay = 0, az = 0;
 
-// Tek bir register'a bir byte yaz
-void registerYaz(uint8_t adres, uint8_t reg, uint8_t deger) {
-  Wire.beginTransmission(adres);
+// Write one byte to a register
+void writeRegister(uint8_t addr, uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(addr);
   Wire.write(reg);
-  Wire.write(deger);
+  Wire.write(value);
   Wire.endTransmission();
 }
 
-// reg'den başlayarak adet kadar byte oku (sensör register adresini kendisi artırır)
-bool registerOku(uint8_t adres, uint8_t reg, uint8_t *tampon, uint8_t adet) {
-  Wire.beginTransmission(adres);
+// Read count bytes starting at reg (the sensor auto-increments the register pointer)
+bool readRegisters(uint8_t addr, uint8_t reg, uint8_t *buf, uint8_t count) {
+  Wire.beginTransmission(addr);
   Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) return false;  // false: STOP yerine repeated START
-  if (Wire.requestFrom(adres, adet) != adet) return false;
-  for (uint8_t i = 0; i < adet; i++) tampon[i] = Wire.read();
+  if (Wire.endTransmission(false) != 0) return false;  // false: repeated START instead of STOP
+  if (Wire.requestFrom(addr, count) != count) return false;
+  for (uint8_t i = 0; i < count; i++) buf[i] = Wire.read();
   return true;
 }
 
-// Hattaki tüm adresleri dene, ACK veren cihazları yazdır
-void i2cTara() {
-  Serial.println("I2C taramasi basliyor...");
-  int bulunan = 0;
-  for (uint8_t adres = 1; adres < 127; adres++) {
-    Wire.beginTransmission(adres);
-    if (Wire.endTransmission() == 0) {  // 0 = cihaz ACK verdi
-      Serial.printf("  Cihaz bulundu: 0x%02X\n", adres);
-      bulunan++;
+// Probe every 7-bit address and print the ones that ACK
+void scanI2C() {
+  Serial.println("Scanning I2C bus...");
+  int found = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {  // 0 = device ACKed
+      Serial.printf("  Device found at 0x%02X\n", addr);
+      found++;
     }
   }
-  Serial.printf("Toplam %d cihaz\n", bulunan);
+  Serial.printf("%d device(s) found\n", found);
 }
 
-// Tarayıcıdan "/" istenince: 2 saniyede bir kendini yenileyen basit sayfa
-void anaSayfa() {
+// GET /: a simple page that refreshes itself every 2 s
+void handleRoot() {
   String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>"
                 "<meta http-equiv='refresh' content='2'>"
                 "<meta name='viewport' content='width=device-width'>"
                 "<title>ESP32 Sensor</title></head>"
                 "<body style='font-family:sans-serif;text-align:center'>"
-                "<h1>ESP32 Sensör</h1>";
-  html += "<p style='font-size:2em'>🌡 " + String(sicaklik, 1) + " °C</p>";
-  html += "<p style='font-size:2em'>💧 %" + String(nem, 1) + "</p>";
-  html += "<p>Çalışma süresi: " + String(millis() / 1000) + " sn</p>";
+                "<h1>ESP32 Sensor</h1>";
+  html += "<p style='font-size:2em'>🌡 " + String(temperature, 1) + " °C</p>";
+  html += "<p style='font-size:2em'>💧 " + String(humidity, 1) + " %</p>";
+  html += "<p>Uptime: " + String(millis() / 1000) + " s</p>";
   html += "</body></html>";
   server.send(200, "text/html", html);
 }
 
-// "/veri" istenince: aynı veriler JSON olarak (başka programlar için)
-void veriJson() {
-  String json = "{\"sicaklik\":" + String(sicaklik, 1) +
-                ",\"nem\":" + String(nem, 1) +
+// GET /data: the same readings as JSON, for other programs
+void handleData() {
+  String json = "{\"temperature\":" + String(temperature, 1) +
+                ",\"humidity\":" + String(humidity, 1) +
                 ",\"ax\":" + String(ax, 2) +
                 ",\"ay\":" + String(ay, 2) +
                 ",\"az\":" + String(az, 2) + "}";
   server.send(200, "application/json", json);
 }
 
-void wifiBaglan() {
-  Serial.print("WiFi'ye baglaniliyor");
-  WiFi.begin(WIFI_AD, WIFI_SIFRE, 6);
+void connectWiFi() {
+  Serial.print("Connecting to Wi-Fi");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD, 6);
   while (WiFi.status() != WL_CONNECTED) {
     delay(250);
     Serial.print(".");
   }
-  Serial.print("\nBaglandi, IP: ");
+  Serial.print("\nConnected, IP: ");
   Serial.println(WiFi.localIP());
 }
 
-// esp-mqtt her olayda (bağlandı, koptu, mesaj geldi...) bu fonksiyonu kendi görevinden çağırır.
-// Yeniden bağlanmayı da kütüphane kendisi yapar, loop'ta kontrol etmemize gerek yok.
-void mqttOlay(void *arg, esp_event_base_t taban, int32_t olayId, void *olayVerisi) {
-  esp_mqtt_event_handle_t olay = (esp_mqtt_event_handle_t)olayVerisi;
-  switch ((esp_mqtt_event_id_t)olayId) {
+// esp-mqtt calls this from its own task for every event (connected, disconnected, data...).
+// Reconnecting is handled by the library, so loop() does not need to check the link.
+void onMqttEvent(void *arg, esp_event_base_t base, int32_t eventId, void *eventData) {
+  esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)eventData;
+  switch ((esp_mqtt_event_id_t)eventId) {
     case MQTT_EVENT_CONNECTED:
-      mqttBagli = true;
-      Serial.println("MQTT baglandi");
-      // retain = 1: broker bu mesajı saklar, sonradan abone olan da cihazın durumunu görür
-      esp_mqtt_client_publish(mqtt, KONU_DURUM, "cevrimici", 0, 1, 1);
-      esp_mqtt_client_subscribe(mqtt, KONU_KOMUT, 0);
+      mqttConnected = true;
+      Serial.println("MQTT connected");
+      // retain = 1: the broker keeps this message, so late subscribers see the status too
+      esp_mqtt_client_publish(mqtt, TOPIC_STATUS, "online", 0, 1, 1);
+      esp_mqtt_client_subscribe(mqtt, TOPIC_COMMAND, 0);
       break;
 
     case MQTT_EVENT_DISCONNECTED:
-      mqttBagli = false;
-      Serial.println("MQTT koptu, kutuphane tekrar baglanmayi deneyecek");
+      mqttConnected = false;
+      Serial.println("MQTT disconnected, the library will retry");
       break;
 
     case MQTT_EVENT_DATA: {
-      // Gelen veri '\0' ile bitmez, uzunluğu ayrıca verilir
-      int n = min(olay->data_len, (int)sizeof(sonKomut) - 1);
-      portENTER_CRITICAL(&komutKilidi);
-      memcpy(sonKomut, olay->data, n);
-      sonKomut[n] = '\0';
-      portEXIT_CRITICAL(&komutKilidi);
-      Serial.printf("MQTT [%.*s]: %.*s\n", olay->topic_len, olay->topic, olay->data_len, olay->data);
+      // Payload is not null-terminated; its length is passed separately
+      int n = min(event->data_len, (int)sizeof(lastCommand) - 1);
+      portENTER_CRITICAL(&commandLock);
+      memcpy(lastCommand, event->data, n);
+      lastCommand[n] = '\0';
+      portEXIT_CRITICAL(&commandLock);
+      Serial.printf("MQTT [%.*s]: %.*s\n", event->topic_len, event->topic, event->data_len, event->data);
       break;
     }
 
     case MQTT_EVENT_ERROR:
-      Serial.printf("MQTT hatasi (tip %d)\n", olay->error_handle->error_type);
+      Serial.printf("MQTT error (type %d)\n", event->error_handle->error_type);
       break;
 
     default:
@@ -159,23 +159,23 @@ void mqttOlay(void *arg, esp_event_base_t taban, int32_t olayId, void *olayVeris
   }
 }
 
-void mqttBaslat() {
-  esp_mqtt_client_config_t ayar = {};
-  ayar.uri = MQTT_URI;
-  ayar.username = "public";
-  ayar.password = "public";
-  ayar.cert_pem = CA_SERTIFIKA;  // sunucunun gerçekten o broker olduğunu bu kök sertifikayla doğrula
-  // Son vasiyet (Last Will): ESP32 habersizce koparsa broker bu mesajı kendisi yayınlar
-  ayar.lwt_topic = KONU_DURUM;
-  ayar.lwt_msg = "cevrimdisi";
-  ayar.lwt_qos = 1;
-  ayar.lwt_retain = 1;
-  ayar.keepalive = 15;  // 15 sn ses çıkmazsa broker cihazı kopmuş sayar
+void startMqtt() {
+  esp_mqtt_client_config_t cfg = {};
+  cfg.uri = MQTT_URI;
+  cfg.username = "public";
+  cfg.password = "public";
+  cfg.cert_pem = CA_CERT;  // verify the server really is the broker, using this root CA
+  // Last Will: if the device drops without saying goodbye, the broker publishes this for it
+  cfg.lwt_topic = TOPIC_STATUS;
+  cfg.lwt_msg = "offline";
+  cfg.lwt_qos = 1;
+  cfg.lwt_retain = 1;
+  cfg.keepalive = 15;  // broker treats the device as gone after 15 s of silence
 
-  mqtt = esp_mqtt_client_init(&ayar);
-  esp_mqtt_client_register_event(mqtt, MQTT_EVENT_ANY, mqttOlay, NULL);
+  mqtt = esp_mqtt_client_init(&cfg);
+  esp_mqtt_client_register_event(mqtt, MQTT_EVENT_ANY, onMqttEvent, NULL);
   esp_mqtt_client_start(mqtt);
-  Serial.println("MQTT istemcisi basladi");
+  Serial.println("MQTT client started");
 }
 
 void setup() {
@@ -183,108 +183,107 @@ void setup() {
   Wire.begin(21, 22);  // SDA, SCL
   dht.begin();
 
-  i2cTara();
+  scanI2C();
 
-  // MPU6050'yi kimliğinden tanı ve uykudan uyandır
-  uint8_t kimlik = 0;
-  if (registerOku(MPU_ADDR, REG_WHO_AM_I, &kimlik, 1) && kimlik == 0x68) {
-    registerYaz(MPU_ADDR, REG_PWR_MGMT1, 0x00);
-    mpuVar = true;
-    Serial.println("MPU6050 hazir");
+  // Identify the MPU6050 and wake it from sleep
+  uint8_t id = 0;
+  if (readRegisters(MPU_ADDR, REG_WHO_AM_I, &id, 1) && id == 0x68) {
+    writeRegister(MPU_ADDR, REG_PWR_MGMT_1, 0x00);
+    mpuPresent = true;
+    Serial.println("MPU6050 ready");
   } else {
-    Serial.printf("MPU6050 bulunamadi (WHO_AM_I = 0x%02X)\n", kimlik);
+    Serial.printf("MPU6050 not found (WHO_AM_I = 0x%02X)\n", id);
   }
 
-  // Ekranı başlat
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("SSD1306 ekran bulunamadı!"));
-    for(;;); // Hata varsa kodu burada durdur
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 not found"));
+    for (;;);  // stop here
   }
 
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 10);
-  display.println("WiFi baglaniyor...");
+  display.println("Connecting Wi-Fi...");
   display.display();
 
-  wifiBaglan();
+  connectWiFi();
 
-  server.on("/", anaSayfa);
-  server.on("/veri", veriJson);
+  server.on("/", handleRoot);
+  server.on("/data", handleData);
   server.begin();
-  Serial.println("Web sunucusu basladi");
+  Serial.println("Web server started");
 
-  mqttBaslat();
+  startMqtt();
 }
 
 void loop() {
-  // Gelen HTTP isteklerine cevap ver; bu yüzden loop'ta uzun delay() olmamalı
+  // Answer pending HTTP requests; this is why loop() must never block for long
   server.handleClient();
 
-  // 5 saniyede bir ölçümleri yayınla
-  static unsigned long sonYayin = 0;
-  if (mqttBagli && millis() - sonYayin >= 5000) {
-    sonYayin = millis();
+  // Publish readings every 5 s
+  static unsigned long lastPublish = 0;
+  if (mqttConnected && millis() - lastPublish >= 5000) {
+    lastPublish = millis();
     char json[128];
     snprintf(json, sizeof(json),
-             "{\"sicaklik\":%.1f,\"nem\":%.1f,\"ax\":%.2f,\"ay\":%.2f,\"az\":%.2f}",
-             sicaklik, nem, ax, ay, az);
-    esp_mqtt_client_publish(mqtt, KONU_VERI, json, 0, 0, 0);
+             "{\"temperature\":%.1f,\"humidity\":%.1f,\"ax\":%.2f,\"ay\":%.2f,\"az\":%.2f}",
+             temperature, humidity, ax, ay, az);
+    esp_mqtt_client_publish(mqtt, TOPIC_DATA, json, 0, 0, 0);
   }
 
-  // Sensörleri ve ekranı 500 ms'de bir güncelle
-  static unsigned long sonGuncelleme = 0;
-  if (millis() - sonGuncelleme < 500) return;
-  sonGuncelleme = millis();
+  // Update sensors and display every 500 ms
+  static unsigned long lastUpdate = 0;
+  if (millis() - lastUpdate < 500) return;
+  lastUpdate = millis();
 
-  // İvme: 6 byte, her eksen big-endian işaretli 16 bit
-  uint8_t ham[6];
-  if (mpuVar && registerOku(MPU_ADDR, REG_ACCEL_X_H, ham, 6)) {
-    ax = (int16_t)(ham[0] << 8 | ham[1]) / ACCEL_LSB_PER_G;
-    ay = (int16_t)(ham[2] << 8 | ham[3]) / ACCEL_LSB_PER_G;
-    az = (int16_t)(ham[4] << 8 | ham[5]) / ACCEL_LSB_PER_G;
+  // Acceleration: 6 bytes, each axis a big-endian signed 16-bit value
+  uint8_t raw[6];
+  if (mpuPresent && readRegisters(MPU_ADDR, REG_ACCEL_X_H, raw, 6)) {
+    ax = (int16_t)(raw[0] << 8 | raw[1]) / ACCEL_LSB_PER_G;
+    ay = (int16_t)(raw[2] << 8 | raw[3]) / ACCEL_LSB_PER_G;
+    az = (int16_t)(raw[4] << 8 | raw[5]) / ACCEL_LSB_PER_G;
   }
 
-  // DHT22 en fazla 2 saniyede bir okunabilir, arada son değeri kullan
-  static unsigned long sonDht = 0;
-  if (millis() - sonDht >= 2000) {
-    sonDht = millis();
-    nem = dht.readHumidity();
-    sicaklik = dht.readTemperature();
-    if (isnan(nem) || isnan(sicaklik)) Serial.println("Sensör Hatasi!");
-    // Seri port MQTT mesajlarını boğmasın diye sadece DHT okununca yazdır
-    Serial.printf("T: %.1f C | Nem: %%%.1f | ax: %.2f ay: %.2f az: %.2f g\n",
-                  sicaklik, nem, ax, ay, az);
+  // The DHT22 can be read at most once every 2 s; keep the last value in between
+  static unsigned long lastDht = 0;
+  if (millis() - lastDht >= 2000) {
+    lastDht = millis();
+    humidity = dht.readHumidity();
+    temperature = dht.readTemperature();
+    if (isnan(humidity) || isnan(temperature)) Serial.println("DHT22 read error");
+    // Print only on DHT reads so the serial log does not drown out MQTT messages
+    Serial.printf("T: %.1f C | RH: %.1f %% | ax: %.2f ay: %.2f az: %.2f g\n",
+                  temperature, humidity, ax, ay, az);
   }
 
   display.clearDisplay();
   display.setTextSize(1);
   display.setCursor(0, 0);
-  display.printf("Sicaklik: %.1f C", sicaklik);
+  display.printf("Temp:     %.1f C", temperature);
   display.setCursor(0, 12);
-  display.printf("Nem:      %%%.1f", nem);
+  display.printf("Humidity: %.1f %%", humidity);
   display.setCursor(0, 21);
-  char komut[sizeof(sonKomut)];
-  portENTER_CRITICAL(&komutKilidi);
-  strcpy(komut, sonKomut);
-  portEXIT_CRITICAL(&komutKilidi);
-  if (komut[0] != '\0') {
-    display.printf("> %s", komut);
+  char command[sizeof(lastCommand)];
+  portENTER_CRITICAL(&commandLock);
+  strcpy(command, lastCommand);
+  portEXIT_CRITICAL(&commandLock);
+  if (command[0] != '\0') {
+    display.printf("> %s", command);
   } else {
     display.print(WiFi.localIP());
-    display.print(mqttBagli ? " MQTT" : "");
+    display.print(mqttConnected ? " MQTT" : "");
   }
 
   display.setCursor(0, 30);
-  if (mpuVar) {
+  if (mpuPresent) {
     display.printf("ax: %+.2f g", ax);
     display.setCursor(0, 42);
     display.printf("ay: %+.2f g", ay);
     display.setCursor(0, 54);
     display.printf("az: %+.2f g", az);
   } else {
-    display.print("MPU6050 yok");
+    display.print("MPU6050 missing");
   }
   display.display();
 }

@@ -1,0 +1,9 @@
+[wokwi]
+version = 1
+firmware = '.pio/build/esp32doit-devkit-v1/firmware.bin'
+elf = '.pio/build/esp32doit-devkit-v1/firmware.elf'
+
+# Tarayıcıdan http://localhost:8180 -> simülasyondaki ESP32'nin 80. portu
+[[net.forward]]
+from = "localhost:8180"
+to = "target:80"

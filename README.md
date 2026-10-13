@@ -27,6 +27,7 @@ Bare-metal and RTOS firmware practice on an **ESP32-S3** using **ESP-IDF v6.0.2*
 | `hello_world` | Toolchain bring-up, serial monitor, build size analysis, partition table |
 | `blink` | GPIO output via driver API, then the same LED driven by direct register writes |
 | `wokwi_iot_sensor` | Simulated IoT node (classic ESP32, Arduino + esp-mqtt): DHT22 + MPU6050 + OLED, web server, MQTT over WSS with TLS |
+| `stm32_gpio_registers` | STM32F401 (NUCLEO-F401RE) without HAL: memory-mapped registers, masks, clock gating, GPIO output and input, ODR versus BSRR, SysTick. A tutorial with exercises. Different board and toolchain: see its own README |
 
 ## Notes
 
@@ -36,7 +37,16 @@ Bare-metal and RTOS firmware practice on an **ESP32-S3** using **ESP-IDF v6.0.2*
 | `notes/day-02.md` | Clock, hardware timers, PWM/LEDC, GPIO interrupts, switch bounce |
 | `notes/theory/` | Hardware-independent reference: embedded C, serial protocols, interrupts and concurrency |
 
-## Build & run
+## Related repositories
+
+Larger projects live in their own repositories:
+
+| Repository | What it is |
+|---|---|
+| [`hava-istasyonu`](https://github.com/yavuzselimuyaner/hava-istasyonu) | ESP32-C3 weather station: KiCad board, ESP-IDF firmware, FreeCAD enclosure |
+| [`stm32-uart-mouse`](https://github.com/yavuzselimuyaner/stm32-uart-mouse) | Five-button mouse on the STM32F401RE: timer-based polling, debounced clicks, interrupt-driven UART RX with a ring buffer |
+
+## Build & run (ESP-IDF projects)
 
 ```
 idf.py set-target esp32s3
